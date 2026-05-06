@@ -14,7 +14,7 @@ export async function getIdentity(): Promise<Identity> {
   const stored = loadStored()
   const body = stored?.guestId ? { guestId: stored.guestId } : {}
 
-  const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL ?? 'http://localhost:3001'
+  const socketUrl = (process.env.NEXT_PUBLIC_SOCKET_URL ?? 'http://localhost:3001').replace(/\/$/, '')
   const res = await fetch(`${socketUrl}/v1/identity`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
