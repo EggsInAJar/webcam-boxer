@@ -184,6 +184,12 @@ io.on('connection', (socket) => {
     }
   })
 
+  // WebRTC signaling relay — forward offer/answer/ICE to the other player in the room
+  socket.on('signal', (payload) => {
+    if (!socket.data.room) return
+    socket.to(socket.data.room).emit('signal', payload)
+  })
+
   socket.on('punch', (payload) => {
     if (!punchRl.check(socket.id).allowed) return
     try {

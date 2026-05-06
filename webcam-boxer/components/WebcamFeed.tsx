@@ -18,6 +18,7 @@ export type WebcamStatus = 'requesting' | 'loading' | 'ready' | 'denied' | 'erro
 type Props = {
   onLandmarks?: (landmarks: NormalizedLandmark[], timestamp: number) => void
   onStatusChange?: (status: WebcamStatus) => void
+  onStream?: (stream: MediaStream) => void
   showOverlay?: boolean
   className?: string
 }
@@ -25,6 +26,7 @@ type Props = {
 export default function WebcamFeed({
   onLandmarks,
   onStatusChange,
+  onStream,
   showOverlay = true,
   className = '',
 }: Props) {
@@ -61,6 +63,7 @@ export default function WebcamFeed({
 
       if (!activeRef.current || !videoRef.current) return
       videoRef.current.srcObject = stream
+      onStream?.(stream)
 
       // Step 2: load pose AI
       updateStatus('loading')

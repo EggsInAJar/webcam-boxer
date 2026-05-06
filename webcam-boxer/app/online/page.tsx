@@ -50,7 +50,70 @@ export default function OnlinePage() {
   const blockClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const matchTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // ── WebRTC ─────────────────────────────────────────────────────────────────
+  const pcRef = useRef<RTCPeerConnection | null>(null)
+  const localStreamRef = useRef<MediaStream | null>(null)
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([])
+  const remoteVideoRef = useRef<HTMLVideoElement>(null)
+  const [remoteVideoReady, setRemoteVideoReady] = useState(false)
+
   stateRef.current = gameState
+
+  // ── WebRTC helpers ─────────────────────────────────────────────────────────
+
+  const closePeerConnection = useCallback(() => {
+    pcRef.current?.close()
+    pcRef.current = null
+    pendingCandidatesRef.current = []
+    setRemoteVideoReady(false)
+  }, [])
+
+  const addTracksAndOffer = useCallback(async (pc: RTCPeerConnection, stream: MediaStream) => {
+    stream.getTracks().forEach((t) => pc.addTrack(t, stream))
+    if (mySideRef.current === 'left') {
+      const offer = await pc.createOffer()
+      await pc.setLocalDescription(offer)
+      socketClient.sendSignal(offer)
+    }
+  }, [])
+
+  const initPeerConnection = useCallback(() => {
+    closePeerConnection()
+
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ],
+    })
+
+    pc.ontrack = (e) => {
+      const stream = e.streams[0]
+      if (stream && remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = stream
+        setRemoteVideoReady(true)
+      }
+    }
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        socketClient.sendSignal({ type: 'candidate', candidate: e.candidate.toJSON() })
+      }
+    }
+
+    pcRef.current = pc
+
+    if (localStreamRef.current) {
+      addTracksAndOffer(pc, localStreamRef.current)
+    }
+  }, [closePeerConnection, addTracksAndOffer])
+
+  const onStream = useCallback((stream: MediaStream) => {
+    localStreamRef.current = stream
+    if (pcRef.current) {
+      addTracksAndOffer(pcRef.current, stream)
+    }
+  }, [addTracksAndOffer])
 
   // ── Socket setup ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -80,6 +143,7 @@ export default function OnlinePage() {
       setRematchStatus('idle')
       detectorRef.current.reset()
       setGameState(createGame())
+      initPeerConnection()
       setOnlinePhase('found')
 
       let c = 3
@@ -157,17 +221,48 @@ export default function OnlinePage() {
     const offRematchWaiting = socketClient.onRematchWaiting(() => setRematchStatus('waiting'))
     const offRematchDeclined = socketClient.onRematchDeclined(() => setRematchStatus('declined'))
 
+    const offSignal = socketClient.onSignal(async (raw) => {
+      const sig = raw as { type: string; sdp?: string; candidate?: RTCIceCandidateInit }
+      const pc = pcRef.current
+      if (!pc) return
+      try {
+        if (sig.type === 'offer' || sig.type === 'answer') {
+          const desc = { type: sig.type as RTCSdpType, sdp: sig.sdp }
+          await pc.setRemoteDescription(new RTCSessionDescription(desc))
+          if (sig.type === 'offer') {
+            const answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            socketClient.sendSignal(answer)
+            for (const c of pendingCandidatesRef.current) {
+              await pc.addIceCandidate(new RTCIceCandidate(c))
+            }
+            pendingCandidatesRef.current = []
+          }
+        } else if (sig.type === 'candidate' && sig.candidate) {
+          if (pc.remoteDescription) {
+            await pc.addIceCandidate(new RTCIceCandidate(sig.candidate))
+          } else {
+            pendingCandidatesRef.current.push(sig.candidate)
+          }
+        }
+      } catch {
+        // non-fatal — game still works without opponent video
+      }
+    })
+
     return () => {
       cancelled = true
       offFound(); offPunch(); offRound(); offRoundStart()
       offMatch(); offRating(); offLeft(); offConnect(); offDisconnect()
       offReconnecting(); offReconnectFailed()
       offQueueFull(); offRematchWaiting(); offRematchDeclined()
+      offSignal()
       if (matchTimerRef.current) clearInterval(matchTimerRef.current)
+      closePeerConnection()
       socketClient.disconnect()
       cancelAnimationFrame(rafRef.current)
     }
-  }, [])
+  }, [initPeerConnection, closePeerConnection])
 
   // ── Visual game timer (cosmetic — server is authoritative for round end) ───
   useEffect(() => {
@@ -216,6 +311,7 @@ export default function OnlinePage() {
   }, [])
 
   const handleRematch = useCallback(() => {
+    closePeerConnection()
     detectorRef.current.reset()
     setGameState(createGame())
     setMatchResult(null)
@@ -224,7 +320,7 @@ export default function OnlinePage() {
     setRematchStatus('idle')
     setOnlinePhase('searching')
     socketClient.findMatch()
-  }, [])
+  }, [closePeerConnection])
 
   const handleRequestRematch = useCallback(() => {
     socketClient.sendRematch()
@@ -263,14 +359,31 @@ export default function OnlinePage() {
       <HUD state={gameState} />
 
       <div className="relative w-full max-w-[800px]" style={{ aspectRatio: '2/1' }}>
-        {/* Webcam always mounted so MediaPipe loads and pose is detected during matchmaking */}
+        {/* Player webcam — always mounted so MediaPipe loads during matchmaking */}
         <div className={`absolute top-0 left-0 bottom-0 ${isFighting ? 'w-1/2' : 'w-full'}`}>
           <WebcamFeed
             onLandmarks={onLandmarks}
             onStatusChange={setWebcamStatus}
+            onStream={onStream}
             showOverlay={isFighting || onlinePhase === 'calibrating' || onlinePhase === 'searching'}
             className="w-full h-full"
           />
+        </div>
+
+        {/* Opponent webcam — right half, shown during fighting via WebRTC */}
+        <div className={`absolute top-0 right-0 bottom-0 w-1/2 bg-black transition-opacity ${isFighting ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-full object-cover"
+          />
+          {!remoteVideoReady && isFighting && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <p className="font-pixel text-[7px] text-white/30 blink">CONNECTING VIDEO...</p>
+            </div>
+          )}
         </div>
 
         {isFighting && (

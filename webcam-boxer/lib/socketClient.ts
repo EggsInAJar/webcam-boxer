@@ -73,6 +73,15 @@ export const socketClient = {
     getSocket().emit('ready')
   },
 
+  sendSignal(data: unknown) {
+    getSocket().emit('signal', data)
+  },
+
+  onSignal(cb: (data: unknown) => void) {
+    getSocket().on('signal', cb)
+    return () => getSocket().off('signal', cb)
+  },
+
   sendPunch(room: string, punch: PunchType) {
     getSocket().emit('punch', { room, punch })
   },
