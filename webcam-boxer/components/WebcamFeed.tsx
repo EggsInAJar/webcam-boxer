@@ -13,7 +13,7 @@ const CONNECTIONS: [number, number][] = [
   [LM.LEFT_SHOULDER, LM.RIGHT_SHOULDER],
 ]
 
-export type WebcamStatus = 'requesting' | 'loading' | 'ready' | 'denied' | 'error'
+export type WebcamStatus = 'requesting' | 'loading' | 'ready' | 'denied' | 'error' | 'ai-error'
 
 type Props = {
   onLandmarks?: (landmarks: NormalizedLandmark[], timestamp: number) => void
@@ -48,21 +48,29 @@ export default function WebcamFeed({
     let stream: MediaStream | null = null
 
     async function init() {
+      // Step 1: camera access
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
         })
-        if (!activeRef.current || !videoRef.current) return
-        videoRef.current.srcObject = stream
+      } catch (err: unknown) {
+        const name = (err as Error)?.name
+        updateStatus(name === 'NotAllowedError' || name === 'PermissionDeniedError' ? 'denied' : 'error')
+        return
+      }
 
-        updateStatus('loading')
+      if (!activeRef.current || !videoRef.current) return
+      videoRef.current.srcObject = stream
+
+      // Step 2: load pose AI
+      updateStatus('loading')
+      try {
         const lm = await getPoseLandmarker()
         if (!activeRef.current) return
         landmarkerRef.current = lm
         updateStatus('ready')
-      } catch (err: unknown) {
-        const name = (err as Error)?.name
-        updateStatus(name === 'NotAllowedError' || name === 'PermissionDeniedError' ? 'denied' : 'error')
+      } catch {
+        updateStatus('ai-error')
       }
     }
 
@@ -144,7 +152,7 @@ export default function WebcamFeed({
     }
   }, [status, showOverlay, onLandmarks])
 
-  if (status === 'denied' || status === 'error') {
+  if (status === 'denied' || status === 'error' || status === 'ai-error') {
     return <CameraBlocked status={status} />
   }
 
@@ -183,18 +191,24 @@ function Overlay({ children }: { children: React.ReactNode }) {
   )
 }
 
-function CameraBlocked({ status }: { status: 'denied' | 'error' }) {
+function CameraBlocked({ status }: { status: 'denied' | 'error' | 'ai-error' }) {
+  const title =
+    status === 'denied' ? 'CAMERA BLOCKED' :
+    status === 'ai-error' ? 'POSE AI FAILED' :
+    'CAMERA ERROR'
+
+  const message =
+    status === 'denied'
+      ? 'THIS GAME NEEDS YOUR WEBCAM. CLICK THE CAMERA ICON IN YOUR ADDRESS BAR AND ALLOW ACCESS.'
+      : status === 'ai-error'
+      ? 'CAMERA IS ON BUT THE POSE DETECTION MODEL FAILED TO LOAD. CHECK YOUR CONNECTION AND TRY AGAIN.'
+      : 'COULD NOT ACCESS YOUR CAMERA. ANOTHER APP MAY BE USING IT EXCLUSIVELY.'
+
   return (
     <div className="flex flex-col items-center justify-center gap-6 p-8 text-center min-h-[300px]">
       <div className="text-red text-2xl">✖</div>
-      <p className="text-[#FF1744] text-xs">
-        {status === 'denied' ? 'CAMERA BLOCKED' : 'CAMERA ERROR'}
-      </p>
-      <p className="text-white/60 text-[8px] leading-loose max-w-xs">
-        {status === 'denied'
-          ? 'THIS GAME NEEDS YOUR WEBCAM. CLICK THE CAMERA ICON IN YOUR ADDRESS BAR AND ALLOW ACCESS.'
-          : 'COULD NOT ACCESS YOUR CAMERA. CHECK THAT NO OTHER APP IS USING IT.'}
-      </p>
+      <p className="text-[#FF1744] text-xs">{title}</p>
+      <p className="text-white/60 text-[8px] leading-loose max-w-xs">{message}</p>
       <button className="btn-arcade btn-arcade-sm" onClick={() => window.location.reload()}>
         TRY AGAIN
       </button>

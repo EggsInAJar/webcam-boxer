@@ -8,8 +8,9 @@ const isDev = process.env.NODE_ENV === 'development'
 
 const csp = [
   "default-src 'self'",
-  // Scripts: self + Next.js inline eval in dev
-  isDev ? "script-src 'self' 'unsafe-eval' 'unsafe-inline'" : "script-src 'self' 'unsafe-inline'",
+  // Scripts: self + inline styles. 'wasm-unsafe-eval' is required for MediaPipe WASM in production.
+  // 'unsafe-eval' is additionally needed in dev for Next.js HMR.
+  isDev ? "script-src 'self' 'unsafe-eval' 'unsafe-inline'" : "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
   // Styles: self + Tailwind inline
   "style-src 'self' 'unsafe-inline'",
   // Media: webcam (blob: for canvas captures)
