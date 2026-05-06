@@ -255,6 +255,6 @@ process.on('uncaughtException', (err) => {
   process.exit(1)
 })
 
-httpServer.listen(cfg.port, () => {
+httpServer.listen(cfg.port, '0.0.0.0', () => {
   logger.info({ port: cfg.port }, 'Webcam Boxer server started')
 })
