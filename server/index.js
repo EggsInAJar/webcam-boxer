@@ -6,7 +6,7 @@ import { logger } from './lib/logger.js'
 import { getSupabase } from './lib/supabase.js'
 import { mintToken, verifyToken, findOrCreatePlayer } from './lib/identity.js'
 import { handleFindMatch, removeFromQueue } from './matchmaking.js'
-import { createRoom, handlePunch, handleDisconnect, getRoomCount } from './gameRoom.js'
+import { createRoom, handlePunch, handleDisconnect, getRoomCount, handlePlayerReady } from './gameRoom.js'
 import { handleRequestRematch } from './rematch.js'
 import { RateLimiter } from './lib/rateLimit.js'
 
@@ -173,6 +173,14 @@ io.on('connection', (socket) => {
       handleFindMatch(socket, io)
     } catch (err) {
       logger.error({ err }, 'findMatch error')
+    }
+  })
+
+  socket.on('ready', () => {
+    try {
+      handlePlayerReady(socket)
+    } catch (err) {
+      logger.error({ err }, 'ready error')
     }
   })
 

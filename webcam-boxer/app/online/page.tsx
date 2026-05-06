@@ -25,7 +25,7 @@ import type { MatchResultPayload, MatchFoundPayload, RatingUpdatePayload } from 
 const WebcamFeed = dynamic(() => import('@/components/WebcamFeed'), { ssr: false })
 const GameCanvas = dynamic(() => import('@/components/GameCanvas'), { ssr: false })
 
-type OnlinePhase = 'searching' | 'found' | 'calibrating' | 'fighting' | 'gameover' | 'disconnected' | 'queueFull'
+type OnlinePhase = 'searching' | 'found' | 'calibrating' | 'ready' | 'fighting' | 'gameover' | 'disconnected' | 'queueFull'
 type ConnStatus = 'connecting' | 'live' | 'reconnecting' | 'offline'
 
 export default function OnlinePage() {
@@ -118,8 +118,9 @@ export default function OnlinePage() {
       })
     })
 
-    // Server starts next round
+    // Server starts round (round 1: after both players ready; subsequent: after round-end delay)
     const offRoundStart = socketClient.onRoundStart(({ round }) => {
+      setOnlinePhase('fighting')
       setGameState((s) => ({
         ...startFighting(s),
         round,
@@ -209,8 +210,8 @@ export default function OnlinePage() {
   )
 
   const onCalibrationComplete = useCallback(() => {
-    setOnlinePhase('fighting')
-    setGameState((s) => startFighting(s))
+    setOnlinePhase('ready')
+    socketClient.sendReady()
     track('match_start')
   }, [])
 
@@ -233,7 +234,7 @@ export default function OnlinePage() {
 
   if (onlinePhase === 'queueFull') {
     return (
-      <StatusScreen>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#080808]">
         <div className="flex flex-col items-center gap-4">
           <p className="font-pixel text-[10px] text-[#FF1744]">SERVER FULL</p>
           <p className="font-pixel text-[8px] text-white/40">TRY AGAIN IN A FEW MINUTES</p>
@@ -241,56 +242,11 @@ export default function OnlinePage() {
             BACK
           </a>
         </div>
-      </StatusScreen>
+      </div>
     )
   }
 
-  if (onlinePhase === 'searching') {
-    return (
-      <StatusScreen>
-        <div className="flex flex-col items-center gap-6">
-          <div className="font-pixel text-[10px] text-gold blink">FINDING OPPONENT...</div>
-          <div className="flex gap-2">
-            {[0, 1, 2].map((i) => (
-              <div
-                key={i}
-                className="w-3 h-3 bg-gold"
-                style={{ animation: `blink 1.2s step-end ${i * 0.4}s infinite` }}
-              />
-            ))}
-          </div>
-          <a href="/" className="font-pixel text-[8px] text-white/30 mt-4 hover:text-white/50">
-            CANCEL
-          </a>
-        </div>
-      </StatusScreen>
-    )
-  }
-
-  if (onlinePhase === 'found') {
-    return (
-      <StatusScreen>
-        <div className="flex flex-col items-center gap-4">
-          <p className="font-pixel text-[10px] text-[#00E676]">OPPONENT FOUND!</p>
-          {matchInfo?.opponentUsername && (
-            <p className="font-pixel text-[8px] text-white/50">{matchInfo.opponentUsername}</p>
-          )}
-          {matchInfo?.opponentRating !== undefined && (
-            <p className="font-pixel text-[8px]" style={{ color: '#FFD700' }}>
-              ★ {matchInfo.opponentRating}
-            </p>
-          )}
-          <div
-            className="font-pixel text-6xl text-gold"
-            style={{ textShadow: '0 0 30px rgba(255,215,0,0.9)' }}
-          >
-            {matchCountdown}
-          </div>
-          <p className="font-pixel text-[8px] text-white/40">GET READY...</p>
-        </div>
-      </StatusScreen>
-    )
-  }
+  const isFighting = onlinePhase === 'fighting'
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-[#080808] px-4 py-6 gap-4">
@@ -307,17 +263,17 @@ export default function OnlinePage() {
       <HUD state={gameState} />
 
       <div className="relative w-full max-w-[800px]" style={{ aspectRatio: '2/1' }}>
-        {/* Webcam occupies left half during fight, full width during calibration */}
-        <div className={`absolute top-0 left-0 bottom-0 ${onlinePhase === 'fighting' ? 'w-1/2' : 'w-full'}`}>
+        {/* Webcam always mounted so MediaPipe loads and pose is detected during matchmaking */}
+        <div className={`absolute top-0 left-0 bottom-0 ${isFighting ? 'w-1/2' : 'w-full'}`}>
           <WebcamFeed
             onLandmarks={onLandmarks}
             onStatusChange={setWebcamStatus}
-            showOverlay={onlinePhase !== 'fighting'}
+            showOverlay={isFighting || onlinePhase === 'calibrating' || onlinePhase === 'searching'}
             className="w-full h-full"
           />
         </div>
 
-        {onlinePhase === 'fighting' && (
+        {isFighting && (
           <div className="absolute inset-0">
             <GameCanvas gameState={gameState} webcamMode className="w-full h-full" />
           </div>
@@ -328,6 +284,12 @@ export default function OnlinePage() {
             poseDetected={poseDetected}
             onComplete={onCalibrationComplete}
           />
+        )}
+
+        {onlinePhase === 'ready' && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60">
+            <p className="font-pixel text-[10px] text-[#00E676] blink">WAITING FOR OPPONENT...</p>
+          </div>
         )}
 
         {onlinePhase === 'gameover' && matchResult && (
@@ -341,15 +303,65 @@ export default function OnlinePage() {
             rematchStatus={rematchStatus}
           />
         )}
-      </div>
-    </div>
-  )
-}
 
-function StatusScreen({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-[#080808]">
-      {children}
+        {/* Overlays for pre-match phases — rendered on top of the live webcam */}
+        {onlinePhase === 'searching' && (
+          <div className="absolute inset-0 flex flex-col items-center justify-between bg-black/50 py-6 px-4">
+            {/* Top: matchmaking status */}
+            <div className="flex flex-col items-center gap-3">
+              <div className="font-pixel text-[10px] text-gold blink">FINDING OPPONENT...</div>
+              <div className="flex gap-2">
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={i}
+                    className="w-3 h-3 bg-gold"
+                    style={{ animation: `blink 1.2s step-end ${i * 0.4}s infinite` }}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Bottom: pose status + cancel */}
+            <div className="flex flex-col items-center gap-3">
+              <div
+                className="font-pixel text-[8px] px-3 py-1"
+                style={{
+                  color: poseDetected ? '#00E676' : '#FFD700',
+                  border: `1px solid ${poseDetected ? '#00E676' : '#FFD70060'}`,
+                }}
+              >
+                {poseDetected ? 'POSE READY ✓' : 'GET IN POSITION...'}
+              </div>
+              <a href="/" className="font-pixel text-[7px] text-white/30 hover:text-white/50">
+                CANCEL
+              </a>
+            </div>
+          </div>
+        )}
+
+        {onlinePhase === 'found' && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80">
+            <div className="flex flex-col items-center gap-4">
+              <p className="font-pixel text-[10px] text-[#00E676]">OPPONENT FOUND!</p>
+              {matchInfo?.opponentUsername && (
+                <p className="font-pixel text-[8px] text-white/50">{matchInfo.opponentUsername}</p>
+              )}
+              {matchInfo?.opponentRating !== undefined && (
+                <p className="font-pixel text-[8px]" style={{ color: '#FFD700' }}>
+                  ★ {matchInfo.opponentRating}
+                </p>
+              )}
+              <div
+                className="font-pixel text-6xl text-gold"
+                style={{ textShadow: '0 0 30px rgba(255,215,0,0.9)' }}
+              >
+                {matchCountdown}
+              </div>
+              <p className="font-pixel text-[8px] text-white/40">GET READY...</p>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

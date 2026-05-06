@@ -69,6 +69,10 @@ export const socketClient = {
     getSocket().emit('findMatch')
   },
 
+  sendReady() {
+    getSocket().emit('ready')
+  },
+
   sendPunch(room: string, punch: PunchType) {
     getSocket().emit('punch', { room, punch })
   },

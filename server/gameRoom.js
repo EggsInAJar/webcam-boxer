@@ -27,10 +27,13 @@ export function createRoom(io, leftSocket, rightSocket) {
   leftSocket.data.side = 'left'
   rightSocket.data.side = 'right'
 
-  const state = createRoomState(
-    leftSocket.data.guestId ?? null,
-    rightSocket.data.guestId ?? null,
-  )
+  const state = {
+    ...createRoomState(
+      leftSocket.data.guestId ?? null,
+      rightSocket.data.guestId ?? null,
+    ),
+    phase: 'waiting', // timer starts only after both players signal ready
+  }
 
   const entry = {
     id: roomId,
@@ -40,10 +43,11 @@ export function createRoom(io, leftSocket, rightSocket) {
     intervalId: null,
     roundEndTimer: null,
     forfeitTimers: {},
+    ready: new Set(),
   }
 
   rooms.set(roomId, entry)
-  startRoundTimer(entry)
+  // Timer starts in handlePlayerReady once both players are calibrated
 
   logger.info(
     { roomId: roomId.slice(0, 8), left: leftSocket.id.slice(0, 6), right: rightSocket.id.slice(0, 6) },
@@ -51,6 +55,27 @@ export function createRoom(io, leftSocket, rightSocket) {
   )
 
   return roomId
+}
+
+/**
+ * Called when a player finishes calibration and is ready to fight.
+ * Starts the round timer only after both players have signalled ready.
+ */
+export function handlePlayerReady(socket) {
+  const room = socket.data.room
+  if (!room) return
+  const entry = rooms.get(room)
+  if (!entry || entry.state.phase !== 'waiting') return
+
+  entry.ready.add(socket.id)
+  logger.info({ roomId: room.slice(0, 8), socketId: socket.id.slice(0, 6), readyCount: entry.ready.size }, 'player ready')
+
+  if (entry.ready.size >= 2) {
+    entry.state = { ...entry.state, phase: 'fighting' }
+    entry.io.to(room).emit('roundStart', { round: entry.state.round })
+    startRoundTimer(entry)
+    logger.info({ roomId: room.slice(0, 8) }, 'both players ready — round started')
+  }
 }
 
 function startRoundTimer(entry) {
