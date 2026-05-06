@@ -42,7 +42,6 @@ function getSocket(): Socket {
   if (!socket) {
     socket = io(URL, {
       autoConnect: false,
-      transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 500,

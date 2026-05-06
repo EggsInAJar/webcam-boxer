@@ -140,7 +140,6 @@ const io = new Server(httpServer, {
     origin: cfg.allowedOrigins,
     methods: ['GET', 'POST'],
   },
-  transports: ['websocket'],
 })
 
 // Auth middleware — attach verified identity to socket.data
