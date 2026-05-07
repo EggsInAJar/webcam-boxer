@@ -7,6 +7,8 @@ type Props = {
   gameState: GameState
   /** When true: transparent bg, no player sprite — your webcam IS the player */
   webcamMode?: boolean
+  /** When true: skip the right-half background fill and opponent sprite — opponent's webcam IS the opponent */
+  opponentHasVideo?: boolean
   className?: string
 }
 
@@ -40,7 +42,7 @@ const COL = {
   red:         '#FF1744',
 }
 
-export default function GameCanvas({ gameState, webcamMode = false, className = '' }: Props) {
+export default function GameCanvas({ gameState, webcamMode = false, opponentHasVideo = false, className = '' }: Props) {
   const canvasRef      = useRef<HTMLCanvasElement>(null)
   const stateRef       = useRef(gameState)
   const rafRef         = useRef<number>(0)
@@ -78,13 +80,13 @@ export default function GameCanvas({ gameState, webcamMode = false, className = 
       ctx.clearRect(0, 0, W, H)
 
       if (webcamMode) {
-        drawWebcamBackground(ctx, state, ts)
+        drawWebcamBackground(ctx, state, ts, opponentHasVideo)
       } else {
         drawOpaqueBackground(ctx)
       }
 
       drawFloor(ctx, webcamMode)
-      drawFighters(ctx, state, elapsed, ts, webcamMode)
+      drawFighters(ctx, state, elapsed, ts, webcamMode, opponentHasVideo)
       drawDamageParticles(ctx, ts, particlesRef.current)
       drawPhaseOverlay(ctx, state)
 
@@ -96,7 +98,7 @@ export default function GameCanvas({ gameState, webcamMode = false, className = 
 
     rafRef.current = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(rafRef.current)
-  }, [webcamMode])
+  }, [webcamMode, opponentHasVideo])
 
   return (
     <canvas
@@ -124,30 +126,32 @@ function drawOpaqueBackground(ctx: CanvasRenderingContext2D) {
   }
 }
 
-function drawWebcamBackground(ctx: CanvasRenderingContext2D, state: GameState, ts: number) {
-  // Left half is fully transparent — the clipped webcam shows through.
-  // Right half gets a solid dark background so the opponent sprite reads cleanly.
-  ctx.fillStyle = '#0d0d0d'
-  ctx.fillRect(W / 2, 0, W / 2, H)
+function drawWebcamBackground(ctx: CanvasRenderingContext2D, state: GameState, ts: number, opponentHasVideo: boolean) {
+  // Left half is always transparent — the player's webcam shows through.
+  // Right half: solid dark fill (offline / opponent-sprite mode) OR transparent (opponent video mode).
+  if (!opponentHasVideo) {
+    ctx.fillStyle = '#0d0d0d'
+    ctx.fillRect(W / 2, 0, W / 2, H)
 
-  // Subtle grid on the right panel only
-  ctx.strokeStyle = 'rgba(255,215,0,0.04)'
-  ctx.lineWidth = 1
-  for (let x = W / 2; x <= W; x += 40) {
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke()
+    // Subtle grid on the right panel only
+    ctx.strokeStyle = 'rgba(255,215,0,0.04)'
+    ctx.lineWidth = 1
+    for (let x = W / 2; x <= W; x += 40) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke()
+    }
+    for (let y = 0; y <= H; y += 40) {
+      ctx.beginPath(); ctx.moveTo(W / 2, y); ctx.lineTo(W, y); ctx.stroke()
+    }
+
+    // Short blend seam where webcam meets dark panel
+    const seam = ctx.createLinearGradient(W * 0.44, 0, W * 0.5, 0)
+    seam.addColorStop(0, 'rgba(13,13,13,0)')
+    seam.addColorStop(1, 'rgba(13,13,13,1)')
+    ctx.fillStyle = seam
+    ctx.fillRect(W * 0.44, 0, W * 0.06, H)
   }
-  for (let y = 0; y <= H; y += 40) {
-    ctx.beginPath(); ctx.moveTo(W / 2, y); ctx.lineTo(W, y); ctx.stroke()
-  }
 
-  // Short blend seam where webcam meets dark panel
-  const seam = ctx.createLinearGradient(W * 0.44, 0, W * 0.5, 0)
-  seam.addColorStop(0, 'rgba(13,13,13,0)')
-  seam.addColorStop(1, 'rgba(13,13,13,1)')
-  ctx.fillStyle = seam
-  ctx.fillRect(W * 0.44, 0, W * 0.06, H)
-
-  // Dashed center divider
+  // Dashed center divider (always)
   ctx.strokeStyle = 'rgba(255,215,0,0.18)'
   ctx.lineWidth = 1
   ctx.setLineDash([5, 9])
@@ -164,6 +168,17 @@ function drawWebcamBackground(ctx: CanvasRenderingContext2D, state: GameState, t
     leftFlash.addColorStop(1,   'rgba(255,23,68,0)')
     ctx.fillStyle = leftFlash
     ctx.fillRect(0, 0, W / 2, H)
+  }
+
+  // Mirror flash on the right (opponent webcam) side when opponent takes a hit
+  if (opponentHasVideo && state.hitTarget === 'opponent' && hitAge < 140) {
+    const alpha = (1 - hitAge / 140) * 0.5
+    const rightFlash = ctx.createLinearGradient(W, 0, W / 2, 0)
+    rightFlash.addColorStop(0,   `rgba(255,215,0,${alpha})`)
+    rightFlash.addColorStop(0.7, `rgba(255,215,0,${alpha * 0.25})`)
+    rightFlash.addColorStop(1,   'rgba(255,215,0,0)')
+    ctx.fillStyle = rightFlash
+    ctx.fillRect(W / 2, 0, W / 2, H)
   }
 }
 
@@ -190,17 +205,22 @@ function drawFighters(
   state: GameState,
   elapsed: number,
   ts: number,
-  webcamMode: boolean
+  webcamMode: boolean,
+  opponentHasVideo: boolean
 ) {
   const { player, opponent } = state
   const hitAge = ts - state.lastHitTime
 
-  // Opponent (right side, always drawn)
-  const oppBob      = Math.sin(elapsed * 0.005 + Math.PI) * 4
-  const oppPunching = ts - opponent.lastPunchTime < 300
-  drawFighter(ctx, OPP_X, FLOOR_Y + oppBob, COL.oppBody, COL.oppDark, -1, oppPunching, opponent.blocking)
-  if (state.hitTarget === 'opponent' && hitAge < 80) {
-    drawFighterFlash(ctx, OPP_X, FLOOR_Y + oppBob)
+  // Opponent (right side) — drawn as sprite UNLESS opponent's webcam is the visual.
+  if (!opponentHasVideo) {
+    const oppBob      = Math.sin(elapsed * 0.005 + Math.PI) * 4
+    const oppPunching = ts - opponent.lastPunchTime < 300
+    drawFighter(ctx, OPP_X, FLOOR_Y + oppBob, COL.oppBody, COL.oppDark, -1, oppPunching, opponent.blocking)
+    if (state.hitTarget === 'opponent' && hitAge < 80) {
+      drawFighterFlash(ctx, OPP_X, FLOOR_Y + oppBob)
+    }
+  } else {
+    drawOpponentIndicator(ctx, state, elapsed)
   }
 
   if (webcamMode) {
@@ -227,6 +247,47 @@ function drawFighters(
     ctx.fillStyle = state.hitTarget === 'opponent' ? COL.gold : COL.red
     ctx.textAlign = 'center'
     ctx.fillText(state.lastHitText.toUpperCase(), targetX, FLOOR_Y - 120 + yOff)
+    ctx.restore()
+  }
+}
+
+function drawOpponentIndicator(ctx: CanvasRenderingContext2D, state: GameState, elapsed: number) {
+  // Red bracket on the right to mark "opponent" — mirrors drawYouIndicator
+  const pulse = 0.55 + Math.sin(elapsed * 0.003) * 0.15
+  ctx.save()
+  ctx.globalAlpha = pulse
+  ctx.strokeStyle = '#FF1744'
+  ctx.lineWidth = 2
+  const bx = OPP_X - 55
+  const by = FLOOR_Y - 230
+  const bw = 110
+  const bh = 240
+  const arm = 18
+  ctx.beginPath()
+  ctx.moveTo(bx + arm, by); ctx.lineTo(bx, by); ctx.lineTo(bx, by + arm)
+  ctx.moveTo(bx + bw - arm, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + arm)
+  ctx.moveTo(bx, by + bh - arm); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + arm, by + bh)
+  ctx.moveTo(bx + bw, by + bh - arm); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw - arm, by + bh)
+  ctx.stroke()
+  ctx.restore()
+
+  ctx.save()
+  ctx.font      = 'bold 9px "Press Start 2P", monospace'
+  ctx.fillStyle = '#FF1744'
+  ctx.textAlign = 'center'
+  ctx.globalAlpha = 0.8
+  ctx.fillText('OPP', OPP_X, FLOOR_Y + 22)
+  ctx.restore()
+
+  // Visual cue when opponent is blocking — they don't have a sprite, so render a shield ring
+  if (state.opponent.blocking) {
+    ctx.save()
+    ctx.strokeStyle = '#FFD700'
+    ctx.lineWidth = 3
+    ctx.globalAlpha = 0.5
+    ctx.beginPath()
+    ctx.arc(OPP_X, FLOOR_Y - 110, 50, 0, Math.PI * 2)
+    ctx.stroke()
     ctx.restore()
   }
 }

@@ -452,8 +452,13 @@ export default function OnlinePage() {
         </div>
 
         {isFighting && (
-          <div className="absolute inset-0">
-            <GameCanvas gameState={gameState} webcamMode className="w-full h-full" />
+          <div className="absolute inset-0 pointer-events-none">
+            <GameCanvas
+              gameState={gameState}
+              webcamMode
+              opponentHasVideo={remoteVideoReady}
+              className="w-full h-full"
+            />
           </div>
         )}
 
