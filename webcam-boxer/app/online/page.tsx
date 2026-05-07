@@ -54,6 +54,7 @@ export default function OnlinePage() {
   const pcRef = useRef<RTCPeerConnection | null>(null)
   const localStreamRef = useRef<MediaStream | null>(null)
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([])
+  const pendingOfferRef = useRef<{ type: string; sdp?: string } | null>(null)
   const remoteVideoRef = useRef<HTMLVideoElement>(null)
   const [remoteVideoReady, setRemoteVideoReady] = useState(false)
 
@@ -65,17 +66,54 @@ export default function OnlinePage() {
     pcRef.current?.close()
     pcRef.current = null
     pendingCandidatesRef.current = []
+    pendingOfferRef.current = null
     setRemoteVideoReady(false)
   }, [])
 
-  const addTracksAndOffer = useCallback(async (pc: RTCPeerConnection, stream: MediaStream) => {
-    stream.getTracks().forEach((t) => pc.addTrack(t, stream))
-    if (mySideRef.current === 'left') {
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-      socketClient.sendSignal(offer)
+  const drainPendingCandidates = useCallback(async (pc: RTCPeerConnection) => {
+    for (const c of pendingCandidatesRef.current) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(c))
+      } catch {
+        // skip bad candidate
+      }
     }
+    pendingCandidatesRef.current = []
   }, [])
+
+  const processRemoteOffer = useCallback(
+    async (pc: RTCPeerConnection, offer: { type: string; sdp?: string }) => {
+      await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: offer.sdp }))
+      const answer = await pc.createAnswer()
+      await pc.setLocalDescription(answer)
+      socketClient.sendSignal(answer)
+      await drainPendingCandidates(pc)
+    },
+    [drainPendingCandidates]
+  )
+
+  const addTracksAndOffer = useCallback(
+    async (pc: RTCPeerConnection, stream: MediaStream) => {
+      for (const t of stream.getTracks()) {
+        if (!pc.getSenders().some((s) => s.track === t)) {
+          pc.addTrack(t, stream)
+        }
+      }
+      if (mySideRef.current === 'left') {
+        if (pc.signalingState !== 'stable') return
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        socketClient.sendSignal(offer)
+      } else if (pendingOfferRef.current) {
+        // Right side: an offer arrived before our stream was ready — process it now
+        // so the answer SDP includes our outgoing tracks.
+        const queued = pendingOfferRef.current
+        pendingOfferRef.current = null
+        await processRemoteOffer(pc, queued)
+      }
+    },
+    [processRemoteOffer]
+  )
 
   const initPeerConnection = useCallback(() => {
     closePeerConnection()
@@ -226,18 +264,20 @@ export default function OnlinePage() {
       const pc = pcRef.current
       if (!pc) return
       try {
-        if (sig.type === 'offer' || sig.type === 'answer') {
-          const desc = { type: sig.type as RTCSdpType, sdp: sig.sdp }
-          await pc.setRemoteDescription(new RTCSessionDescription(desc))
-          if (sig.type === 'offer') {
-            const answer = await pc.createAnswer()
-            await pc.setLocalDescription(answer)
-            socketClient.sendSignal(answer)
-            for (const c of pendingCandidatesRef.current) {
-              await pc.addIceCandidate(new RTCIceCandidate(c))
-            }
-            pendingCandidatesRef.current = []
+        if (sig.type === 'offer') {
+          // Right side defers answering until local tracks are added, otherwise
+          // our answer SDP would be recv-only and the opponent would never see us.
+          const haveLocalTracks = pc.getSenders().some((s) => s.track)
+          if (mySideRef.current === 'right' && !haveLocalTracks) {
+            pendingOfferRef.current = sig
+            return
           }
+          await processRemoteOffer(pc, sig)
+        } else if (sig.type === 'answer') {
+          await pc.setRemoteDescription(
+            new RTCSessionDescription({ type: 'answer', sdp: sig.sdp })
+          )
+          await drainPendingCandidates(pc)
         } else if (sig.type === 'candidate' && sig.candidate) {
           if (pc.remoteDescription) {
             await pc.addIceCandidate(new RTCIceCandidate(sig.candidate))
@@ -245,8 +285,8 @@ export default function OnlinePage() {
             pendingCandidatesRef.current.push(sig.candidate)
           }
         }
-      } catch {
-        // non-fatal — game still works without opponent video
+      } catch (err) {
+        console.warn('[webrtc] signal error', err)
       }
     })
 
@@ -262,7 +302,7 @@ export default function OnlinePage() {
       socketClient.disconnect()
       cancelAnimationFrame(rafRef.current)
     }
-  }, [initPeerConnection, closePeerConnection])
+  }, [initPeerConnection, closePeerConnection, processRemoteOffer, drainPendingCandidates])
 
   // ── Visual game timer (cosmetic — server is authoritative for round end) ───
   useEffect(() => {
