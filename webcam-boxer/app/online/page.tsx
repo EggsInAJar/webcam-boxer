@@ -127,16 +127,41 @@ export default function OnlinePage() {
 
     pc.ontrack = (e) => {
       const stream = e.streams[0]
-      if (stream && remoteVideoRef.current) {
+      console.log('[webrtc] ontrack', e.track.kind, 'streams=', e.streams.length, 'muted=', e.track.muted)
+      if (!stream || !remoteVideoRef.current) return
+
+      // Re-attach srcObject only if it's a different stream (avoid resetting the video element)
+      if (remoteVideoRef.current.srcObject !== stream) {
         remoteVideoRef.current.srcObject = stream
-        setRemoteVideoReady(true)
       }
+      setRemoteVideoReady(true)
+
+      e.track.onended = () => console.warn('[webrtc] remote track ended:', e.track.kind)
+      e.track.onmute = () => console.warn('[webrtc] remote track muted:', e.track.kind)
+      e.track.onunmute = () => console.log('[webrtc] remote track unmuted:', e.track.kind)
+      stream.onremovetrack = (ev) => console.warn('[webrtc] remote stream removetrack:', ev.track.kind)
     }
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
         socketClient.sendSignal({ type: 'candidate', candidate: e.candidate.toJSON() })
       }
+    }
+
+    pc.oniceconnectionstatechange = () => {
+      console.log('[webrtc] iceConnectionState=', pc.iceConnectionState)
+      if (pc.iceConnectionState === 'failed') {
+        // Try ICE restart on the offerer side
+        if (mySideRef.current === 'left') {
+          pc.restartIce?.()
+        }
+      }
+    }
+    pc.onconnectionstatechange = () => {
+      console.log('[webrtc] connectionState=', pc.connectionState)
+    }
+    pc.onsignalingstatechange = () => {
+      console.log('[webrtc] signalingState=', pc.signalingState)
     }
 
     pcRef.current = pc

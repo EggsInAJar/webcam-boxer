@@ -82,7 +82,10 @@ export default function WebcamFeed({
     return () => {
       activeRef.current = false
       cancelAnimationFrame(rafRef.current)
-      if (stream) stream.getTracks().forEach((t) => t.stop())
+      if (stream) {
+        console.warn('[webcam] cleanup — stopping local tracks', stream.getTracks().map((t) => t.kind))
+        stream.getTracks().forEach((t) => t.stop())
+      }
     }
   }, [updateStatus])
 
