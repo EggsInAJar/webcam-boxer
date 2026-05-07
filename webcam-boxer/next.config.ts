@@ -1,7 +1,21 @@
 import type { NextConfig } from 'next'
 
-const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL ?? 'http://localhost:3001'
-const socketWs = socketUrl.replace(/^http/, 'ws')
+// Normalize NEXT_PUBLIC_SOCKET_URL into both http(s):// and ws(s):// variants so
+// CSP allows the Socket.IO upgrade regardless of how the env var is formatted.
+// Accepts: "host", "host:port", "https://host", "https://host/", etc.
+function deriveSocketOrigins(raw: string): { http: string; ws: string } {
+  const trimmed = raw.replace(/\/+$/, '')
+  const hasScheme = /^[a-z]+:\/\//i.test(trimmed)
+  const isLocal = /(^|\/\/)(localhost|127\.0\.0\.1)(:|$|\/)/i.test(trimmed)
+  const httpScheme = isLocal ? 'http' : 'https'
+  const httpOrigin = hasScheme ? trimmed : `${httpScheme}://${trimmed}`
+  const wsOrigin = httpOrigin.replace(/^http/, 'ws')
+  return { http: httpOrigin, ws: wsOrigin }
+}
+
+const { http: socketUrl, ws: socketWs } = deriveSocketOrigins(
+  process.env.NEXT_PUBLIC_SOCKET_URL ?? 'http://localhost:3001'
+)
 
 // CSP for production; relaxed in dev to allow HMR websocket
 const isDev = process.env.NODE_ENV === 'development'
